@@ -1,77 +1,43 @@
 <?php
 
 /**
- * Super Admin Panel — authentication + dashboard.
+ * Super Admin Panel — front controller.
  *
- * Session-based login against the `admins` table (hashed passwords), CSRF
- * protection on the login form, IP + audit logging, and a live dashboard of
- * platform KPIs. Management sub-pages hang off this same guarded bootstrap.
+ * Boots the guarded admin context, then dispatches to a page under /pages.
+ * Each page processes its own POST actions and echoes its body; this file
+ * captures that body and wraps it in the shared layout (sidebar + topbar).
  */
 
 declare(strict_types=1);
 
-session_start();
+require __DIR__ . '/app.php';
 
-use App\Core\Security;
+// Whitelisted pages -> [file, title]. Adding a feature = adding a page here.
+$pages = [
+    'dashboard'   => ['dashboard.php',   'Dashboard'],
+    'users'       => ['users.php',       'Users'],
+    'user'        => ['user.php',        'User Profile'],
+    'advertisers' => ['advertisers.php', 'Advertisers'],
+    'campaigns'   => ['campaigns.php',   'Campaigns'],
+    'deposits'    => ['deposits.php',    'Deposits'],
+    'withdrawals' => ['withdrawals.php',  'Withdrawals'],
+    'tasktypes'   => ['tasktypes.php',   'Task & Profit Settings'],
+    'payment'     => ['payment.php',     'Payment Settings'],
+    'settings'    => ['settings.php',    'Bot & Platform Settings'],
+    'broadcast'   => ['broadcast.php',   'Broadcast'],
+    'logs'        => ['logs.php',        'Logs'],
+];
 
-/** @var \App\Core\App $app */
-$app = require dirname(__DIR__) . '/core/bootstrap.php';
-
-if (!$app->config()->isInstalled()) {
-    header('Location: ../install/');
-    exit;
+$page = (string) ($_GET['page'] ?? 'dashboard');
+if (!isset($pages[$page])) {
+    $page = 'dashboard';
 }
 
-$db = $app->db();
-$security = $app->security();
+[$pageFile, $pageTitle] = $pages[$page];
+$activePage = $page;
 
-// Session timeout (30 min idle).
-if (isset($_SESSION['admin_id']) && (time() - ($_SESSION['admin_last'] ?? 0)) > 1800) {
-    session_unset();
-    session_destroy();
-    header('Location: index.php?timeout=1');
-    exit;
-}
-$_SESSION['admin_last'] = time();
+ob_start();
+require __DIR__ . '/pages/' . $pageFile;
+$content = ob_get_clean();
 
-$action = $_GET['action'] ?? '';
-
-// Logout.
-if ($action === 'logout') {
-    session_unset();
-    session_destroy();
-    header('Location: index.php');
-    exit;
-}
-
-// Login submit.
-$loginError = null;
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['do'] ?? '') === 'login') {
-    if (!$security->verifyCsrf($_POST['csrf'] ?? null)) {
-        $loginError = 'Invalid session token. Please retry.';
-    } elseif (!$app->rateLimiter()->allow('adminlogin:' . ($_SERVER['REMOTE_ADDR'] ?? 'x'), 5, 300)) {
-        $loginError = 'Too many attempts. Try again in a few minutes.';
-    } else {
-        $admin = $db->fetch('SELECT * FROM admins WHERE username = ? LIMIT 1', [trim($_POST['username'] ?? '')]);
-        if ($admin !== null && Security::verifyPassword((string) ($_POST['password'] ?? ''), (string) $admin['password_hash'])) {
-            session_regenerate_id(true);
-            $_SESSION['admin_id'] = (int) $admin['id'];
-            $_SESSION['admin_name'] = $admin['username'];
-            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-            $db->update('admins', ['last_login_at' => date('Y-m-d H:i:s'), 'last_login_ip' => $ip], ['id' => (int) $admin['id']]);
-            $db->insert('admin_logs', ['admin_id' => (int) $admin['id'], 'action' => 'login', 'ip' => $ip]);
-            header('Location: index.php');
-            exit;
-        }
-        $loginError = 'Invalid username or password.';
-    }
-}
-
-$loggedIn = isset($_SESSION['admin_id']);
-
-function h(mixed $v): string
-{
-    return htmlspecialchars((string) $v, ENT_QUOTES);
-}
-
-require __DIR__ . '/view.php';
+require __DIR__ . '/layout.php';
