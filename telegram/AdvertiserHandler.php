@@ -98,6 +98,11 @@ final class AdvertiserHandler
 
     public function routeCallback(string $action, array $user, int $chatId): void
     {
+        if ($action === 'deposit') {
+            // Deposits from the advertiser Wallet screen fund the advertiser wallet.
+            $this->startDeposit($user, $chatId, 'advertiser');
+            return;
+        }
         if (str_starts_with($action, 'wd:')) {
             $this->pickWithdrawMethod($user, $chatId, substr($action, 3));
             return;
@@ -150,15 +155,22 @@ final class AdvertiserHandler
 
     private function startCreate(array $user, int $chatId): void
     {
-        $kb = Keyboard::reply();
+        $labels = [];
         foreach ($this->c->registry()->enabled() as $type) {
-            $kb->row($type['icon'] . ' ' . $type['name']);
+            $labels[] = $type['icon'] . ' ' . $type['name'];
+        }
+
+        // Two buttons per row for a cleaner, more organised layout.
+        $kb = Keyboard::reply();
+        foreach (array_chunk($labels, 2) as $pair) {
+            $kb->row(...$pair);
         }
         $kb->row(self::MENU_BACK);
+
         $this->c->state()->set((int) $user['telegram_id'], 'adv:new:type', []);
         $this->c->telegram()->sendMessage(
             $chatId,
-            "➕ <b>Create New Ad</b>\nChoose a task type from the keyboard below:",
+            "➕ <b>Create New Ad</b>\nChoose the type of task you want to promote:",
             ['reply_markup' => $kb->buildReply()]
         );
     }
@@ -307,13 +319,10 @@ final class AdvertiserHandler
         $payload['total_budget'] = (float) $text;
         $this->c->state()->set((int) $user['telegram_id'], 'adv:new:confirm', $payload);
 
-        $pricing = $this->c->campaignService()->pricing((string) $payload['type_key'], (float) $payload['cpc']);
         $summary = sprintf(
-            "📋 <b>Confirm Campaign</b>\n\n🏷 %s\n💵 CPC: %s\n🏦 Platform fee: %s%%\n👷 Worker earns: %s\n💰 Budget: %s",
+            "📋 <b>Confirm Campaign</b>\n\n🏷 %s\n💵 Reward (CPC): %s\n💰 Budget: %s",
             htmlspecialchars((string) $payload['title'], ENT_QUOTES),
             Money::format((float) $payload['cpc']),
-            rtrim(rtrim(number_format($pricing['fee_percent'], 2), '0'), '.'),
-            Money::format($pricing['worker']),
             Money::format((float) $payload['total_budget'])
         );
         $kb = Keyboard::reply()->row(self::BTN_CONFIRM)->row(self::BTN_CANCEL);
@@ -393,7 +402,7 @@ final class AdvertiserHandler
             Money::format((float) ($wallet['spent'] ?? 0)),
             Money::format((float) ($wallet['bonus'] ?? 0))
         );
-        $kb = Keyboard::inline()->inlineRow(['➕ Deposit', 'bal:deposit']);
+        $kb = Keyboard::inline()->inlineRow(['➕ Deposit', 'adv:deposit']);
         $this->c->telegram()->sendMessage($chatId, $text, ['reply_markup' => $kb->buildInline()]);
     }
 
