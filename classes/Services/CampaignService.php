@@ -77,16 +77,36 @@ final class CampaignService
         $pricing = $this->pricing($typeKey, $cpc);
         $target = $pricing['worker'] > 0 ? (int) floor($total / $cpc) : 0;
 
+        // Campaigns are paid from the advertiser's account balance (the same
+        // balance shown on the user Balance screen) so there is a single,
+        // unified balance to deposit into and spend from.
+        $userId = (int) $this->db->column('SELECT user_id FROM advertisers WHERE id = ? LIMIT 1', [$advertiserId]);
+        if ($userId === 0) {
+            return ['ok' => false, 'message' => '❌ Advertiser account not found.'];
+        }
+
         try {
-            return $this->db->transaction(function (Database $db) use ($advertiserId, $typeKey, $config, $data, $content, $cpc, $total, $pricing, $target): array {
+            return $this->db->transaction(function (Database $db) use ($advertiserId, $userId, $typeKey, $config, $data, $content, $cpc, $total, $pricing, $target): array {
                 $affected = $db->run(
-                    'UPDATE advertiser_wallet SET balance = balance - ?, spent = spent + ? WHERE advertiser_id = ? AND balance >= ?',
-                    [$total, 0, $advertiserId, $total]
+                    'UPDATE users SET available_balance = available_balance - ? WHERE id = ? AND available_balance >= ?',
+                    [$total, $userId, $total]
                 )->rowCount();
 
                 if ($affected === 0) {
-                    return ['ok' => false, 'message' => '❌ Insufficient wallet balance. Please deposit first.'];
+                    return ['ok' => false, 'message' => '❌ Insufficient balance. Please deposit first.'];
                 }
+
+                // Keep the advertiser wallet's spent total for statistics.
+                $db->run('UPDATE advertiser_wallet SET spent = spent + ? WHERE advertiser_id = ?', [$total, $advertiserId]);
+
+                $balanceAfter = $db->column('SELECT available_balance FROM users WHERE id = ?', [$userId]);
+                $db->insert('transactions', [
+                    'user_id'       => $userId,
+                    'type'          => 'campaign_spend',
+                    'amount'        => -$total,
+                    'balance_after' => $balanceAfter !== false ? $balanceAfter : null,
+                    'description'   => 'Campaign funding: ' . $data['title'],
+                ]);
 
                 $campaignId = $db->insert('campaigns', [
                     'advertiser_id'        => $advertiserId,

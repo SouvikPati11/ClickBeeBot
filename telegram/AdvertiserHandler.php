@@ -98,11 +98,6 @@ final class AdvertiserHandler
 
     public function routeCallback(string $action, array $user, int $chatId): void
     {
-        if ($action === 'deposit') {
-            // Deposits from the advertiser Wallet screen fund the advertiser wallet.
-            $this->startDeposit($user, $chatId, 'advertiser');
-            return;
-        }
         if (str_starts_with($action, 'wd:')) {
             $this->pickWithdrawMethod($user, $chatId, substr($action, 3));
             return;
@@ -395,14 +390,17 @@ final class AdvertiserHandler
     public function showWallet(array $user, int $chatId): void
     {
         $advertiser = $this->ensureAdvertiser($user);
-        $wallet = $this->c->app()->db()->fetch('SELECT * FROM advertiser_wallet WHERE advertiser_id = ?', [(int) $advertiser['id']]) ?? [];
+        $db = $this->c->app()->db();
+        $wallet = $db->fetch('SELECT * FROM advertiser_wallet WHERE advertiser_id = ?', [(int) $advertiser['id']]) ?? [];
+        // Campaigns are funded from the account balance (same as the Balance
+        // screen), so the wallet shows that single balance.
+        $balance = (float) $db->column('SELECT available_balance FROM users WHERE id = ?', [(int) $user['id']]);
         $text = sprintf(
-            "💰 <b>Advertiser Wallet</b>\n\n💵 Balance: <b>%s</b>\n📤 Spent: %s\n🎁 Bonus: %s",
-            Money::format((float) ($wallet['balance'] ?? 0)),
-            Money::format((float) ($wallet['spent'] ?? 0)),
-            Money::format((float) ($wallet['bonus'] ?? 0))
+            "💰 <b>Advertiser Wallet</b>\n\n💵 Balance: <b>%s</b>\n📤 Spent on ads: %s",
+            Money::format($balance),
+            Money::format((float) ($wallet['spent'] ?? 0))
         );
-        $kb = Keyboard::inline()->inlineRow(['➕ Deposit', 'adv:deposit']);
+        $kb = Keyboard::inline()->inlineRow(['➕ Deposit', 'bal:deposit']);
         $this->c->telegram()->sendMessage($chatId, $text, ['reply_markup' => $kb->buildInline()]);
     }
 

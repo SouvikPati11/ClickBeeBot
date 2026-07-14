@@ -28,15 +28,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'add_budget':
                 $amount = (float) ($_POST['amount'] ?? 0);
                 if ($amount > 0) {
-                    $db->transaction(function ($t) use ($id, $amount, $campaign) {
-                        $ok = $t->run('UPDATE advertiser_wallet SET balance = balance - ? WHERE advertiser_id = ? AND balance >= ?', [$amount, (int) $campaign['advertiser_id'], $amount])->rowCount();
-                        if ($ok === 0) {
-                            throw new \RuntimeException('Insufficient advertiser wallet.');
-                        }
-                        $t->run('UPDATE campaigns SET total_budget = total_budget + ?, remaining_budget = remaining_budget + ? WHERE id = ?', [$amount, $amount, $id]);
-                        $t->insert('advertiser_transactions', ['advertiser_id' => (int) $campaign['advertiser_id'], 'type' => 'campaign_payment', 'amount' => -$amount, 'campaign_id' => $id, 'description' => 'Budget increase (admin)']);
-                    });
-                    flash('Budget increased.');
+                    $advUserId = (int) $db->column('SELECT user_id FROM advertisers WHERE id = ?', [(int) $campaign['advertiser_id']]);
+                    try {
+                        $db->transaction(function ($t) use ($id, $amount, $campaign, $advUserId) {
+                            // Draw the extra budget from the advertiser's account balance.
+                            $ok = $t->run('UPDATE users SET available_balance = available_balance - ? WHERE id = ? AND available_balance >= ?', [$amount, $advUserId, $amount])->rowCount();
+                            if ($ok === 0) {
+                                throw new \RuntimeException('Insufficient balance.');
+                            }
+                            $t->run('UPDATE advertiser_wallet SET spent = spent + ? WHERE advertiser_id = ?', [$amount, (int) $campaign['advertiser_id']]);
+                            $t->run('UPDATE campaigns SET total_budget = total_budget + ?, remaining_budget = remaining_budget + ? WHERE id = ?', [$amount, $amount, $id]);
+                            $t->insert('transactions', ['user_id' => $advUserId, 'type' => 'campaign_spend', 'amount' => -$amount, 'description' => 'Budget increase (admin)']);
+                        });
+                        flash('Budget increased.');
+                    } catch (\Throwable $e) {
+                        flash('Insufficient account balance for budget increase.', 'err');
+                    }
                 }
                 break;
             case 'edit':
@@ -46,12 +53,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 flash('Campaign updated.');
                 break;
             case 'delete':
-                // Refund unused budget to the advertiser wallet, then cancel.
-                $db->transaction(function ($t) use ($id, $campaign) {
+                // Refund unused budget to the advertiser's account balance, then cancel.
+                $advUserId = (int) $db->column('SELECT user_id FROM advertisers WHERE id = ?', [(int) $campaign['advertiser_id']]);
+                $db->transaction(function ($t) use ($id, $campaign, $advUserId) {
                     $refund = (float) $campaign['remaining_budget'];
-                    if ($refund > 0) {
-                        $t->run('UPDATE advertiser_wallet SET balance = balance + ? WHERE advertiser_id = ?', [$refund, (int) $campaign['advertiser_id']]);
-                        $t->insert('advertiser_transactions', ['advertiser_id' => (int) $campaign['advertiser_id'], 'type' => 'refund', 'amount' => $refund, 'campaign_id' => $id, 'description' => 'Refund on campaign delete']);
+                    if ($refund > 0 && $advUserId > 0) {
+                        $t->run('UPDATE users SET available_balance = available_balance + ? WHERE id = ?', [$refund, $advUserId]);
+                        $t->run('UPDATE advertiser_wallet SET spent = GREATEST(spent - ?, 0) WHERE advertiser_id = ?', [$refund, (int) $campaign['advertiser_id']]);
+                        $t->insert('transactions', ['user_id' => $advUserId, 'type' => 'campaign_refund', 'amount' => $refund, 'description' => 'Refund on campaign delete']);
                     }
                     $t->update('campaigns', ['status' => 'cancelled', 'remaining_budget' => 0], ['id' => $id]);
                 });
