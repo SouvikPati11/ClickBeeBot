@@ -26,6 +26,8 @@ final class AdvertiserHandler
     private const MENU_STATS  = '📊 Statistics';
     private const MENU_REVIEW = '⏳ Pending Reviews';
     private const MENU_BACK   = '🔙 Back';
+    private const BTN_CONFIRM = '✅ Confirm & Pay';
+    private const BTN_CANCEL  = '❌ Cancel';
 
     public function __construct(private Container $c)
     {
@@ -38,14 +40,23 @@ final class AdvertiserHandler
         $this->ensureAdvertiser($user);
         $this->c->state()->set((int) $user['telegram_id'], 'adv:home', []);
 
-        $kb = Keyboard::reply()
+        $this->c->telegram()->sendMessage($chatId, "📊 <b>Advertiser Panel</b>\nManage your campaigns and wallet.", ['reply_markup' => $this->advMenuMarkup()]);
+    }
+
+    /**
+     * The advertiser main-menu reply keyboard, reused across screens so
+     * navigation stays consistent during the wizard.
+     *
+     * @return array<string, mixed>
+     */
+    private function advMenuMarkup(): array
+    {
+        return Keyboard::reply()
             ->row(self::MENU_CREATE)
             ->row(self::MENU_CAMPS, self::MENU_WALLET)
             ->row(self::MENU_STATS, self::MENU_REVIEW)
             ->row(self::MENU_BACK)
             ->buildReply();
-
-        $this->c->telegram()->sendMessage($chatId, "📊 <b>Advertiser Panel</b>\nManage your campaigns and wallet.", ['reply_markup' => $kb]);
     }
 
     /**
@@ -71,11 +82,13 @@ final class AdvertiserHandler
 
         // Wizard / flow steps.
         return match (true) {
+            $current === 'adv:new:type'    => $this->pickTypeByLabel($user, $chatId, $text),
             $current === 'adv:new:asset'   => $this->collectAsset($update, $user, $chatId, $state['payload']),
             $current === 'adv:new:title'   => $this->collectField($user, $chatId, $state['payload'], 'title', $text, 'adv:new:desc', '📝 Send a short description:'),
             $current === 'adv:new:desc'    => $this->collectField($user, $chatId, $state['payload'], 'description', $text, 'adv:new:cpc', '💵 Send the reward per action (CPC), e.g. 0.02:'),
             $current === 'adv:new:cpc'     => $this->collectCpc($user, $chatId, $state['payload'], $text),
             $current === 'adv:new:budget'  => $this->collectBudget($user, $chatId, $state['payload'], $text),
+            $current === 'adv:new:confirm' => $this->confirmStep($user, $chatId, $text),
             $current === 'adv:deposit'     => $this->collectDeposit($user, $chatId, $state['payload'], $text),
             $current === 'adv:wd:address'  => $this->collectWithdrawAddress($user, $chatId, $state['payload'], $text),
             $current === 'adv:wd:amount'   => $this->collectWithdrawAmount($user, $chatId, $state['payload'], $text),
@@ -85,19 +98,6 @@ final class AdvertiserHandler
 
     public function routeCallback(string $action, array $user, int $chatId): void
     {
-        if (str_starts_with($action, 'new:')) {
-            $this->pickType($user, $chatId, substr($action, 4));
-            return;
-        }
-        if ($action === 'confirm') {
-            $this->finishCreate($user, $chatId);
-            return;
-        }
-        if ($action === 'cancel') {
-            $this->c->state()->set((int) $user['telegram_id'], 'adv:home', []);
-            $this->c->telegram()->sendMessage($chatId, '❌ Cancelled.');
-            return;
-        }
         if (str_starts_with($action, 'wd:')) {
             $this->pickWithdrawMethod($user, $chatId, substr($action, 3));
             return;
@@ -150,11 +150,34 @@ final class AdvertiserHandler
 
     private function startCreate(array $user, int $chatId): void
     {
-        $kb = Keyboard::inline();
+        $kb = Keyboard::reply();
         foreach ($this->c->registry()->enabled() as $type) {
-            $kb->inlineRow([$type['icon'] . ' ' . $type['name'], 'adv:new:' . $type['type_key']]);
+            $kb->row($type['icon'] . ' ' . $type['name']);
         }
-        $this->c->telegram()->sendMessage($chatId, "➕ <b>Create New Ad</b>\nChoose a task type:", ['reply_markup' => $kb->buildInline()]);
+        $kb->row(self::MENU_BACK);
+        $this->c->state()->set((int) $user['telegram_id'], 'adv:new:type', []);
+        $this->c->telegram()->sendMessage(
+            $chatId,
+            "➕ <b>Create New Ad</b>\nChoose a task type from the keyboard below:",
+            ['reply_markup' => $kb->buildReply()]
+        );
+    }
+
+    /**
+     * Resolve the tapped reply-keyboard label to a task type and start the
+     * asset step. Reply keyboards are more reliable than inline callbacks for
+     * this multi-step flow.
+     */
+    private function pickTypeByLabel(array $user, int $chatId, string $label): bool
+    {
+        foreach ($this->c->registry()->enabled() as $type) {
+            if (($type['icon'] . ' ' . $type['name']) === $label) {
+                $this->pickType($user, $chatId, (string) $type['type_key']);
+                return true;
+            }
+        }
+        $this->c->telegram()->sendMessage($chatId, '❌ Please choose a task type using the buttons below.');
+        return true;
     }
 
     private function pickType(array $user, int $chatId, string $typeKey): void
@@ -166,7 +189,8 @@ final class AdvertiserHandler
         }
         $payload = ['type_key' => $typeKey, 'content' => []];
         $this->c->state()->set((int) $user['telegram_id'], 'adv:new:asset', $payload);
-        $this->c->telegram()->sendMessage($chatId, $this->assetPrompt($typeKey));
+        // Restore the advertiser menu keyboard for the remaining wizard steps.
+        $this->c->telegram()->sendMessage($chatId, $this->assetPrompt($typeKey), ['reply_markup' => $this->advMenuMarkup()]);
     }
 
     private function assetPrompt(string $typeKey): string
@@ -292,8 +316,26 @@ final class AdvertiserHandler
             Money::format($pricing['worker']),
             Money::format((float) $payload['total_budget'])
         );
-        $kb = Keyboard::inline()->inlineRow(['✅ Confirm & Pay', 'adv:confirm'], ['❌ Cancel', 'adv:cancel']);
-        $this->c->telegram()->sendMessage($chatId, $summary, ['reply_markup' => $kb->buildInline()]);
+        $kb = Keyboard::reply()->row(self::BTN_CONFIRM)->row(self::BTN_CANCEL);
+        $this->c->telegram()->sendMessage($chatId, $summary . "\n\nConfirm below to pay and activate.", ['reply_markup' => $kb->buildReply()]);
+        return true;
+    }
+
+    /**
+     * Handle the reply-keyboard confirmation step of the create wizard.
+     */
+    private function confirmStep(array $user, int $chatId, string $text): bool
+    {
+        if ($text === self::BTN_CONFIRM) {
+            $this->finishCreate($user, $chatId);
+            return true;
+        }
+        if ($text === self::BTN_CANCEL) {
+            $this->c->state()->set((int) $user['telegram_id'], 'adv:home', []);
+            $this->c->telegram()->sendMessage($chatId, '❌ Cancelled.', ['reply_markup' => $this->advMenuMarkup()]);
+            return true;
+        }
+        $this->c->telegram()->sendMessage($chatId, 'Please tap ✅ Confirm & Pay or ❌ Cancel.');
         return true;
     }
 
@@ -319,7 +361,7 @@ final class AdvertiserHandler
         );
 
         $this->c->state()->set((int) $user['telegram_id'], 'adv:home', []);
-        $this->c->telegram()->sendMessage($chatId, $result['message']);
+        $this->c->telegram()->sendMessage($chatId, $result['message'], ['reply_markup' => $this->advMenuMarkup()]);
     }
 
     private function verifyBotIsAdmin(string $channel, int $chatId): bool
