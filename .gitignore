@@ -1,0 +1,14 @@
+# Generated at install time — never commit real credentials.
+/config/config.php
+/config/install.lock
+
+# Runtime artifacts.
+/logs/*.log
+/storage/cache/*
+/uploads/*
+!/uploads/.htaccess
+
+# OS / editor noise.
+.DS_Store
+Thumbs.db
+*.swp

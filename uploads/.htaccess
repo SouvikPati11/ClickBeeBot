@@ -1,0 +1,7 @@
+# Uploaded files must never be executed as PHP.
+php_flag engine off
+<IfModule mod_php.c>
+  php_admin_flag engine off
+</IfModule>
+AddType text/plain .php .phtml .php3 .php4 .php5 .php7 .php8
+Options -Indexes
