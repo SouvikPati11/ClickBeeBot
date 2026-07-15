@@ -141,7 +141,16 @@ final class TelegramApi
 
     public function setWebhook(string $url, string $secretToken = ''): ?array
     {
-        $params = ['url' => $url, 'drop_pending_updates' => true, 'max_connections' => 50];
+        $params = [
+            'url'                  => $url,
+            'drop_pending_updates' => true,
+            'max_connections'      => 50,
+            // Explicitly request every update type the bot needs. Without this,
+            // a webhook previously registered with a narrower list may never
+            // deliver callback_query updates, which makes ALL inline-keyboard
+            // buttons (Complete, Verify, More, …) appear unresponsive.
+            'allowed_updates'      => ['message', 'edited_message', 'callback_query', 'my_chat_member', 'chat_member'],
+        ];
         if ($secretToken !== '') {
             $params['secret_token'] = $secretToken;
         }

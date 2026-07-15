@@ -57,21 +57,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Optional bot token change -> re-register webhook.
+    // Persist a new bot token if one was entered.
     $newToken = trim((string) ($_POST['bot_token'] ?? ''));
     if ($newToken !== '') {
         $settings->set('bot_token', $newToken);
-        $secret = $settings->get('webhook_secret', '');
-        $base = $settings->get('website_url', $app->config()->baseUrl());
-        if ($base !== '') {
-            $tg = new App\Telegram\TelegramApi($newToken, $app->logger());
-            $tg->setWebhook(rtrim($base, '/') . '/webhook/index.php', $secret);
-        }
     }
 
     $settings->setMany($pairs);
+
+    // Always re-register the webhook on save (with the correct allowed_updates
+    // so inline-keyboard buttons are delivered). Uses the stored token/url.
+    $token = $settings->get('bot_token', '');
+    $base = rtrim($settings->get('website_url', $app->config()->baseUrl()), '/');
+    $webhookOk = null;
+    if ($token !== '' && $base !== '') {
+        $tg = new App\Telegram\TelegramApi($token, $app->logger());
+        $webhookOk = $tg->setWebhook($base . '/webhook/index.php', $settings->get('webhook_secret', '')) !== null;
+    }
+
     admin_log('settings_update', implode(',', array_keys($pairs)));
-    flash('Settings saved.');
+    flash($webhookOk === false
+        ? 'Settings saved, but the webhook could not be re-registered — check the bot token and website URL.'
+        : 'Settings saved.' . ($webhookOk ? ' Webhook re-registered.' : ''), $webhookOk === false ? 'err' : 'ok');
     redirect(admin_url('settings'));
 }
 
