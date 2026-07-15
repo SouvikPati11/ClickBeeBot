@@ -30,18 +30,13 @@ final class VisitWebsiteTask extends TaskType
 
     public function presentKeyboard(array $campaign, array $content, bool $timerReady): array
     {
-        $kb = Keyboard::inline()->inlineRow(
-            ['🌐 Open Website', ['url' => (string) $content['website_url']]]
-        );
-
-        if ($timerReady) {
-            $kb->inlineRow($this->completeButton((int) $campaign['id']));
-        } else {
-            $kb->inlineRow(['⏳ Please wait…', 'task:wait:' . $campaign['id']]);
-        }
-        $kb->inlineRow($this->skipButton((int) $campaign['id']));
-
-        return $kb->buildInline();
+        // Complete is always shown; verify() enforces the timer server-side so
+        // an early tap is rejected with "please wait N more seconds".
+        return Keyboard::inline()
+            ->inlineRow(['🌐 Open Website', ['url' => (string) $content['website_url']]])
+            ->inlineRow($this->completeButton((int) $campaign['id']))
+            ->inlineRow($this->skipButton((int) $campaign['id']))
+            ->buildInline();
     }
 
     public function verify(array $campaign, array $content, array $context): VerificationResult
