@@ -65,14 +65,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $settings->setMany($pairs);
 
-    // Always re-register the webhook on save (with the correct allowed_updates
-    // so inline-keyboard buttons are delivered). Uses the stored token/url.
-    $token = $settings->get('bot_token', '');
-    $base = rtrim($settings->get('website_url', $app->config()->baseUrl()), '/');
+    // Re-register the webhook only when requested (a new bot token was entered,
+    // or the "Re-register webhook" box was ticked). Best-effort: it is wrapped
+    // so a network/API problem can never turn the settings save into a 500.
+    $wantWebhook = $newToken !== '' || isset($_POST['reregister_webhook']);
     $webhookOk = null;
-    if ($token !== '' && $base !== '') {
-        $tg = new App\Telegram\TelegramApi($token, $app->logger());
-        $webhookOk = $tg->setWebhook($base . '/webhook/index.php', $settings->get('webhook_secret', '')) !== null;
+    if ($wantWebhook) {
+        try {
+            $token = $settings->get('bot_token', '');
+            $base = rtrim($settings->get('website_url', $app->config()->baseUrl()), '/');
+            if ($token !== '' && $base !== '') {
+                $tg = new App\Telegram\TelegramApi($token, $app->logger());
+                $webhookOk = $tg->setWebhook($base . '/webhook/index.php', $settings->get('webhook_secret', '')) !== null;
+            }
+        } catch (\Throwable $e) {
+            $app->logger()->error('admin', 'Webhook re-register failed', ['error' => $e->getMessage()]);
+            $webhookOk = false;
+        }
     }
 
     admin_log('settings_update', implode(',', array_keys($pairs)));
@@ -128,8 +137,12 @@ $groups = [
         <?= field($key, $fields[$key], $settings) ?>
       <?php endforeach; ?>
       <?php if ($groupName === 'General'): ?>
-        <label>Bot Token <span class="muted">(leave blank to keep current; changing re-registers the webhook)</span></label>
+        <label>Bot Token <span class="muted">(leave blank to keep current; entering a new one re-registers the webhook)</span></label>
         <input name="bot_token" placeholder="••••••••••••">
+        <label style="display:flex;align-items:center;gap:8px;color:var(--text);margin-top:12px">
+          <input type="checkbox" name="reregister_webhook" style="width:auto"> Re-register Telegram webhook on save
+          <span class="muted">(tick this if inline buttons like Complete / Verify don't respond)</span>
+        </label>
       <?php endif; ?>
     </div>
   <?php endforeach; ?>
